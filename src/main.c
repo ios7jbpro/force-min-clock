@@ -58,7 +58,7 @@ static int RunSmiCommand(const wchar_t *args, wchar_t *output, DWORD outputSize)
     CreatePipe(&hRead, &hWrite, &sa, 0);
     SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
 
-    StringCchPrintfW(cmd, ARRAYSIZE(cmd), L"nvidia-smi %s", args);
+    StringCchPrintfW(cmd, ARRAYSIZE(cmd), L"C:\\Windows\\System32\\nvidia-smi.exe %s", args);
 
     BOOL ok = CreateProcessW(NULL, cmd, NULL, NULL, TRUE,
         CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
@@ -91,7 +91,7 @@ static int RunSmiElevated(const wchar_t *args) {
     wchar_t cmd[512];
     SHELLEXECUTEINFOW sei = { sizeof(sei) };
 
-    StringCchPrintfW(cmd, ARRAYSIZE(cmd), L"nvidia-smi %s", args);
+    StringCchPrintfW(cmd, ARRAYSIZE(cmd), L"C:\\Windows\\System32\\nvidia-smi.exe %s", args);
 
     sei.lpVerb = L"runas";
     sei.lpFile = L"nvidia-smi";
