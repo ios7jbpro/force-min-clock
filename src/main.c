@@ -106,36 +106,59 @@ static int RunSmiElevated(const wchar_t *args) {
     return (int)exitCode;
 }
 
+static void WriteLog(const char *msg) {
+    HANDLE hFile = CreateFileW(L"C:\\Windows\\Temp\\fmc_debug.log", GENERIC_WRITE,
+        FILE_SHARE_READ, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile != INVALID_HANDLE_VALUE) {
+        SetFilePointer(hFile, 0, NULL, FILE_END);
+        DWORD written;
+        WriteFile(hFile, msg, (DWORD)strlen(msg), &written, NULL);
+        CloseHandle(hFile);
+    }
+}
+
 static void CollectMemoryClocks(void) {
     char output[16384];
     int rc = RunSmiCommandA("-q -d SUPPORTED_CLOCKS", output, sizeof(output));
+
+    char log[256];
+    StringCchPrintfA(log, sizeof(log), "RunSmiCommandA returned: %d, output len: %d\r\n", rc, (int)strlen(output));
+    WriteLog(log);
 
     if (rc < 0)
         return;
 
     int found = 0;
     char *p = output;
+    int lineNum = 0;
     while (*p && found < MAX_CLOCK_ENTRIES) {
         char *eol = strstr(p, "\n");
         int len = eol ? (int)(eol - p) : (int)strlen(p);
 
-        if (len >= 6) {
-            char *mem = strstr(p, "Memory");
-            if (mem) {
-                char *colon = strchr(mem, ':');
-                if (colon) {
-                    int mhz = 0;
-                    if (sscanf(colon + 1, " %d MHz", &mhz) == 1 && mhz > 0) {
-                        g_memClocks[found++] = mhz;
-                    }
+        char *mem = strstr(p, "Memory");
+        if (mem) {
+            char *colon = strchr(mem, ':');
+            if (colon) {
+                int mhz = 0;
+                int scanrc = sscanf(colon + 1, " %d MHz", &mhz);
+                StringCchPrintfA(log, sizeof(log),
+                    "Line %d: found Memory, colon='%c', scanrc=%d, mhz=%d, colon+1='%.30s'\r\n",
+                    lineNum, *colon, scanrc, mhz, colon + 1);
+                WriteLog(log);
+                if (scanrc == 1 && mhz > 0) {
+                    g_memClocks[found++] = mhz;
                 }
             }
         }
 
         if (!eol) break;
         p = eol + 1;
-        if (*p == '\r') p++;
+        lineNum++;
     }
+
+    StringCchPrintfA(log, sizeof(log), "Total Memory clocks found: %d\r\n", found);
+    WriteLog(log);
+    WriteLog("===\r\n");
 
     g_memClockCount = found;
     if (g_memClockCount > 1) {
@@ -294,9 +317,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
     CollectMemoryClocks();
 
     if (g_memClockCount == 0) {
-        MessageBoxW(NULL,
-            L"Failed to query NVIDIA GPU clocks.\n\nEnsure nvidia-smi is available and an NVIDIA GPU is present.",
-            L"Force Min Clock", MB_OK | MB_ICONERROR);
+        wchar_t dbg[2048];
+        wchar_t outputW[4096] = L"";
+        char outputA[4096];
+        RunSmiCommandA("-q -d SUPPORTED_CLOCKS", outputA, sizeof(outputA));
+        MultiByteToWideChar(CP_UTF8, 0, outputA, -1, outputW, ARRAYSIZE(outputW));
+
+        StringCchPrintfW(dbg, ARRAYSIZE(dbg),
+            L"Parsed 0 clocks.\n\nFirst 800 chars of nvidia-smi output:\n%.800hs",
+            outputW);
+
+        MessageBoxW(NULL, dbg, L"Force Min Clock - Debug", MB_OK | MB_ICONERROR);
         return 1;
     }
 
