@@ -2,3 +2,5 @@
 #include <windows.h>
 
 IDR_MAIN_ICON ICON "..\\icon.ico"
+
+1 RT_MANIFEST "app.manifest"

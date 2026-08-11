@@ -1,13 +1,8 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <strsafe.h>
+#include <stdio.h>
 #include "resource.h"
-
-#ifdef HAS_NVAPI
-#include "nvapi_loader.h"
-extern BOOL NvApiLoadLibrary(void);
-extern void NvApiFreeLibrary(void);
-#endif
 
 #define WM_TRAYICON (WM_USER + 1)
 #define ID_TRAY_EXIT 1001
@@ -24,19 +19,14 @@ static HWND g_hWnd;
 static NOTIFYICONDATAW g_nid = {0};
 
 typedef struct {
-    int minClockKHz;
-    int maxClockKHz;
+    int minClockMHz;
+    int maxClockMHz;
     int active;
 } ClockSettings;
 
 static ClockSettings g_clocks = {0, 0, 0};
-
-#ifdef HAS_NVAPI
-static NvPhysicalGpuHandle g_gpu = NULL;
 static int g_memClocks[MAX_CLOCK_ENTRIES];
 static int g_memClockCount = 0;
-static NvAPI_ShortString g_gpuName = {0};
-#endif
 
 static int CompareInts(const void *a, const void *b) {
     return (*(const int *)a - *(const int *)b);
@@ -54,41 +44,91 @@ static void ShowBubble(const wchar_t *text, const wchar_t *title) {
     Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
 
+static int RunSmiCommand(const wchar_t *args, wchar_t *output, DWORD outputSize) {
+    wchar_t cmd[512];
+    SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
+    HANDLE hRead, hWrite;
+    STARTUPINFOW si = { sizeof(si) };
+    PROCESS_INFORMATION pi = {0};
+
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = hWrite;
+    si.hStdError = hWrite;
+
+    CreatePipe(&hRead, &hWrite, &sa, 0);
+    SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
+
+    StringCchPrintfW(cmd, ARRAYSIZE(cmd), L"nvidia-smi %s", args);
+
+    BOOL ok = CreateProcessW(NULL, cmd, NULL, NULL, TRUE,
+        CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+
+    CloseHandle(hWrite);
+
+    if (!ok) {
+        CloseHandle(hRead);
+        return 0;
+    }
+
+    DWORD total = 0, read;
+    while (total < outputSize - sizeof(wchar_t) &&
+           ReadFile(hRead, (BYTE *)output + total, outputSize - total - sizeof(wchar_t), &read, NULL) && read > 0) {
+        total += read;
+    }
+    output[total / sizeof(wchar_t)] = L'\0';
+
+    WaitForSingleObject(pi.hProcess, 10000);
+    GetExitCodeProcess(pi.hProcess, (DWORD *)&ok);
+
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    CloseHandle(hRead);
+
+    return (int)ok;
+}
+
+static int RunSmiElevated(const wchar_t *args) {
+    wchar_t cmd[512];
+    SHELLEXECUTEINFOW sei = { sizeof(sei) };
+
+    StringCchPrintfW(cmd, ARRAYSIZE(cmd), L"nvidia-smi %s", args);
+
+    sei.lpVerb = L"runas";
+    sei.lpFile = L"nvidia-smi";
+    sei.lpParameters = args;
+    sei.nShow = SW_HIDE;
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+
+    if (!ShellExecuteExW(&sei))
+        return 1;
+
+    WaitForSingleObject(sei.hProcess, 10000);
+    DWORD exitCode = 0;
+    GetExitCodeProcess(sei.hProcess, &exitCode);
+    CloseHandle(sei.hProcess);
+    return (int)exitCode;
+}
+
 static void CollectMemoryClocks(void) {
-#ifdef HAS_NVAPI
-    NvU32 count = 0;
-    NvPhysicalGpuHandle gpus[NVAPI_MAX_PHYSICAL_GPUS];
-    if (NvAPI_EnumPhysicalGPUs(gpus, &count) != NVAPI_OK || count == 0)
-        return;
-
-    g_gpu = gpus[0];
-    NvAPI_GPU_GetFullName(g_gpu, g_gpuName);
-
-    NV_GPU_PERF_PSTATES20_INFO pstates = {0};
-    pstates.version = NV_GPU_PERF_PSTATES20_INFO_VER;
-    if (NvAPI_GPU_GetPstates20(g_gpu, &pstates) != NVAPI_OK)
+    wchar_t output[16384];
+    if (!RunSmiCommand(L"-q -d SUPPORTED_CLOCKS", output, ARRAYSIZE(output)))
         return;
 
     int found = 0;
-    for (NvU32 p = 0; p < pstates.numPstates && found < MAX_CLOCK_ENTRIES; p++) {
-        NV_GPU_PERF_PSTATES20_INFO *ps = &pstates;
-        for (NvU32 c = 0; c < ps->numClocks && found < MAX_CLOCK_ENTRIES; c++) {
-            NV_GPU_PSTATE20_CLOCK_ENTRY_V1 *clk = &ps->pstates[p].clocks[c];
-            if (clk->domainId != NVAPI_GPU_PUBLIC_CLOCK_MEMORY)
-                continue;
-
-            if (clk->typeId == NVAPI_GPU_PERF_PSTATE20_CLOCK_TYPE_SINGLE) {
-                int freq = (int)clk->data.single.freq_kHz;
-                if (freq > 0) {
-                    g_memClocks[found++] = freq;
+    wchar_t *ctx = NULL;
+    wchar_t *line = wcstok(output, L"\r\n", &ctx);
+    while (line && found < MAX_CLOCK_ENTRIES) {
+        wchar_t *mem = wcsstr(line, L"Memory");
+        if (mem) {
+            wchar_t *colon = wcschr(mem, L':');
+            if (colon) {
+                int mhz = 0;
+                if (swscanf(colon + 1, L"%d MHz", &mhz) == 1 && mhz > 0) {
+                    g_memClocks[found++] = mhz;
                 }
-            } else if (clk->typeId == NVAPI_GPU_PERF_PSTATE20_CLOCK_TYPE_RANGE) {
-                int minF = (int)clk->data.range.minFreq_kHz;
-                int maxF = (int)clk->data.range.maxFreq_kHz;
-                if (minF > 0) g_memClocks[found++] = minF;
-                if (maxF > 0 && maxF != minF) g_memClocks[found++] = maxF;
             }
         }
+        line = wcstok(NULL, L"\r\n", &ctx);
     }
 
     g_memClockCount = found;
@@ -102,7 +142,6 @@ static void CollectMemoryClocks(void) {
         }
         g_memClockCount = unique;
     }
-#endif
 }
 
 static void AddTrayIcon(void) {
@@ -123,26 +162,21 @@ static void RemoveTrayIcon(void) {
 static void BuildClockSubmenu(HMENU hParent, BOOL isMin) {
     HMENU hSub = CreatePopupMenu();
     int base = isMin ? ID_TRAY_MIN_CLOCK_BASE : ID_TRAY_MAX_CLOCK_BASE;
-    int selected = isMin ? g_clocks.minClockKHz : g_clocks.maxClockKHz;
+    int selected = isMin ? g_clocks.minClockMHz : g_clocks.maxClockMHz;
 
-#ifdef HAS_NVAPI
     if (g_memClockCount == 0) {
         AppendMenuW(hSub, MF_STRING | MF_GRAYED, 0, L"No clock data available");
     } else {
         for (int i = 0; i < g_memClockCount; i++) {
-            int freqKHz = g_memClocks[i];
-            int freqMHz = freqKHz / 1000;
+            int mhz = g_memClocks[i];
             wchar_t label[64];
-            StringCchPrintfW(label, ARRAYSIZE(label), L"%d MHz", freqMHz);
+            StringCchPrintfW(label, ARRAYSIZE(label), L"%d MHz", mhz);
             UINT flags = MF_STRING;
-            if (freqKHz == selected)
+            if (mhz == selected)
                 flags |= MF_CHECKED;
             AppendMenuW(hSub, flags, base + i, label);
         }
     }
-#else
-    AppendMenuW(hSub, MF_STRING | MF_GRAYED, 0, L"NVAPI not available");
-#endif
 
     const wchar_t *title = isMin ? L"Min Memory Clock" : L"Max Memory Clock";
     AppendMenuW(hParent, MF_POPUP, (UINT_PTR)hSub, title);
@@ -169,21 +203,19 @@ static void ShowContextMenu(void) {
 }
 
 static void HandleClockSelection(WORD id, BOOL isMin) {
-#ifdef HAS_NVAPI
     int idx = (int)(isMin ? (id - ID_TRAY_MIN_CLOCK_BASE) : (id - ID_TRAY_MAX_CLOCK_BASE));
     if (idx >= 0 && idx < g_memClockCount) {
-        int freqMHz = g_memClocks[idx] / 1000;
+        int mhz = g_memClocks[idx];
         wchar_t msg[128];
         if (isMin) {
-            g_clocks.minClockKHz = g_memClocks[idx];
-            StringCchPrintfW(msg, ARRAYSIZE(msg), L"Min clock set to %d MHz.", freqMHz);
+            g_clocks.minClockMHz = mhz;
+            StringCchPrintfW(msg, ARRAYSIZE(msg), L"Min clock set to %d MHz.", mhz);
         } else {
-            g_clocks.maxClockKHz = g_memClocks[idx];
-            StringCchPrintfW(msg, ARRAYSIZE(msg), L"Max clock set to %d MHz.", freqMHz);
+            g_clocks.maxClockMHz = mhz;
+            StringCchPrintfW(msg, ARRAYSIZE(msg), L"Max clock set to %d MHz.", mhz);
         }
         ShowBubble(msg, L"Force Min Clock");
     }
-#endif
 }
 
 static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -207,20 +239,28 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 PostQuitMessage(0);
                 break;
             case ID_TRAY_APPLY:
-                if (g_clocks.minClockKHz > 0 || g_clocks.maxClockKHz > 0) {
-                    wchar_t msg[256];
-                    StringCchPrintfW(msg, ARRAYSIZE(msg),
-                        L"Min: %d MHz\nMax: %d MHz\n\n(Clock application pending NVAPI set implementation)",
-                        g_clocks.minClockKHz / 1000,
-                        g_clocks.maxClockKHz / 1000);
-                    ShowBubble(msg, L"Force Min Clock");
+                if (g_clocks.minClockMHz > 0 || g_clocks.maxClockMHz > 0) {
+                    wchar_t args[128];
+                    StringCchPrintfW(args, ARRAYSIZE(args), L"-lmc %d,%d",
+                        g_clocks.minClockMHz, g_clocks.maxClockMHz);
+                    int rc = RunSmiElevated(args);
+                    if (rc == 0) {
+                        wchar_t msg[128];
+                        StringCchPrintfW(msg, ARRAYSIZE(msg),
+                            L"Memory clocks locked:\nMin: %d MHz\nMax: %d MHz",
+                            g_clocks.minClockMHz, g_clocks.maxClockMHz);
+                        ShowBubble(msg, L"Force Min Clock");
+                    } else {
+                        ShowBubble(L"Failed to apply clock settings.", L"Force Min Clock");
+                    }
                 } else {
                     ShowBubble(L"No clock speeds selected.", L"Force Min Clock");
                 }
                 break;
             case ID_TRAY_MIN_DEFAULT:
-                g_clocks.minClockKHz = 0;
-                g_clocks.maxClockKHz = 0;
+                g_clocks.minClockMHz = 0;
+                g_clocks.maxClockMHz = 0;
+                RunSmiElevated(L"--reset-gpu-clocks");
                 ShowBubble(L"Reset to default clocks.", L"Force Min Clock");
                 break;
             }
@@ -245,35 +285,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 
     g_hInstance = hInstance;
 
-#ifdef HAS_NVAPI
-    if (!NvApiLoadLibrary()) {
-        MessageBoxW(NULL,
-            L"Failed to load NVAPI library.\n\nPlease ensure NVIDIA drivers are installed.",
-            L"Force Min Clock", MB_OK | MB_ICONERROR);
-        return 1;
-    }
-
-    if (NvAPI_Initialize() != NVAPI_OK) {
-        MessageBoxW(NULL,
-            L"Failed to initialize NVAPI.\n\nPlease ensure NVIDIA drivers are installed.",
-            L"Force Min Clock", MB_OK | MB_ICONERROR);
-        return 1;
-    }
-
     CollectMemoryClocks();
 
-    if (g_gpu == NULL) {
+    if (g_memClockCount == 0) {
         MessageBoxW(NULL,
-            L"No NVIDIA GPU detected.\n\nThis application requires an NVIDIA GPU to run.",
+            L"Failed to query NVIDIA GPU clocks.\n\nEnsure nvidia-smi is available and an NVIDIA GPU is present.",
             L"Force Min Clock", MB_OK | MB_ICONERROR);
-        NvAPI_Unload();
         return 1;
     }
-#else
-    MessageBoxW(NULL,
-        L"Built without NVAPI. Running in stub mode.",
-        L"Force Min Clock", MB_OK | MB_ICONINFORMATION);
-#endif
 
     WNDCLASSW wc = {0};
     wc.lpfnWndProc = WndProc;
@@ -285,9 +304,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
         0, 0, 0, 0, 0, HWND_MESSAGE, NULL, hInstance, NULL);
 
     if (!g_hWnd) {
-#ifdef HAS_NVAPI
-        NvAPI_Unload();
-#endif
         return 1;
     }
 
@@ -298,11 +314,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
-
-#ifdef HAS_NVAPI
-    NvAPI_Unload();
-    NvApiFreeLibrary();
-#endif
 
     return (int)msg.wParam;
 }

@@ -5,7 +5,6 @@ set(CMAKE_C_STANDARD 11)
 
 add_executable(force-min-clock WIN32
     src/main.c
-    src/nvapi_loader.c
     src/resource.rc
 )
 
@@ -17,6 +16,3 @@ target_link_libraries(force-min-clock PRIVATE
     comctl32
     advapi32
 )
-
-# NVAPI is loaded dynamically from nvapi64.dll at runtime - no link-time dependency needed
-target_compile_definitions(force-min-clock PRIVATE HAS_NVAPI)
