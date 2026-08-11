@@ -116,12 +116,13 @@ static void CollectMemoryClocks(void) {
         return;
 
     int found = 0;
-    char *ctx = NULL;
-    char *line = strtok_s(output, "\r\n", &ctx);
-    while (line && found < MAX_CLOCK_ENTRIES) {
-        char *mem = strstr(line, "Memory");
-        if (mem) {
-            char *colon = strchr(mem, ':');
+    char *p = output;
+    while (*p && found < MAX_CLOCK_ENTRIES) {
+        char *eol = strstr(p, "\n");
+        int len = eol ? (int)(eol - p) : (int)strlen(p);
+
+        if (len >= 6 && strncmp(p, "Memory", 6) == 0) {
+            char *colon = memchr(p, ':', len);
             if (colon) {
                 int mhz = 0;
                 if (sscanf(colon + 1, " %d MHz", &mhz) == 1 && mhz > 0) {
@@ -129,7 +130,10 @@ static void CollectMemoryClocks(void) {
                 }
             }
         }
-        line = strtok_s(NULL, "\r\n", &ctx);
+
+        if (!eol) break;
+        p = eol + 1;
+        if (*p == '\r') p++;
     }
 
     g_memClockCount = found;
