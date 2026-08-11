@@ -198,6 +198,7 @@ static void BuildClockSubmenu(HMENU hParent, BOOL isMin) {
     HMENU hSub = CreatePopupMenu();
     int base = isMin ? ID_TRAY_MIN_CLOCK_BASE : ID_TRAY_MAX_CLOCK_BASE;
     int selected = isMin ? g_clocks.minClockMHz : g_clocks.maxClockMHz;
+    int other = isMin ? g_clocks.maxClockMHz : g_clocks.minClockMHz;
 
     if (g_memClockCount == 0) {
         AppendMenuW(hSub, MF_STRING | MF_GRAYED, 0, L"No clock data available");
@@ -209,6 +210,8 @@ static void BuildClockSubmenu(HMENU hParent, BOOL isMin) {
             UINT flags = MF_STRING;
             if (mhz == selected)
                 flags |= MF_CHECKED;
+            if (other > 0 && ((isMin && mhz > other) || (!isMin && mhz < other)))
+                flags |= MF_GRAYED;
             AppendMenuW(hSub, flags, base + i, label);
         }
     }
