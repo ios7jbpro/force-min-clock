@@ -4,7 +4,9 @@
 #include "resource.h"
 
 #ifdef HAS_NVAPI
-#include <nvapi.h>
+#include "nvapi_loader.h"
+extern BOOL NvApiLoadLibrary(void);
+extern void NvApiFreeLibrary(void);
 #endif
 
 #define WM_TRAYICON (WM_USER + 1)
@@ -244,6 +246,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
     g_hInstance = hInstance;
 
 #ifdef HAS_NVAPI
+    if (!NvApiLoadLibrary()) {
+        MessageBoxW(NULL,
+            L"Failed to load NVAPI library.\n\nPlease ensure NVIDIA drivers are installed.",
+            L"Force Min Clock", MB_OK | MB_ICONERROR);
+        return 1;
+    }
+
     if (NvAPI_Initialize() != NVAPI_OK) {
         MessageBoxW(NULL,
             L"Failed to initialize NVAPI.\n\nPlease ensure NVIDIA drivers are installed.",
@@ -292,6 +301,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 
 #ifdef HAS_NVAPI
     NvAPI_Unload();
+    NvApiFreeLibrary();
 #endif
 
     return (int)msg.wParam;
