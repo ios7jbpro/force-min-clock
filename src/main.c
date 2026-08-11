@@ -299,7 +299,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 g_clocks.maxClockMHz = 0;
                 {
                     char smiOutput[256];
-                    RunSmiCommandA("--reset-gpu-clocks", smiOutput, sizeof(smiOutput));
+                    RunSmiCommandA("--reset-memory-clocks", smiOutput, sizeof(smiOutput));
                 }
                 ShowBubble(L"Reset to default clocks.", L"Force Min Clock");
                 break;
