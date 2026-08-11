@@ -9,6 +9,7 @@ add_executable(force-min-clock WIN32
 )
 
 target_compile_definitions(force-min-clock PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_link_options(force-min-clock PRIVATE -municode -mwindows)
 
 target_link_libraries(force-min-clock PRIVATE
     shell32
