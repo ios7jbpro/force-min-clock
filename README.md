@@ -27,6 +27,8 @@ A system tray tool for NVIDIA GPUs that forces minimum and maximum memory clock 
 
 If you applied clocks in a previous session, they will be re-applied automatically on next startup.
 
+The app also registers itself in Windows startup (`HKCU\...\Run`) so it launches automatically on login.
+
 ## Building
 
 Requires [MSYS2](https://www.msys2.org/) with MinGW-w64 toolchain:

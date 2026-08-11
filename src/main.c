@@ -57,6 +57,22 @@ static void LoadSettings(void) {
     }
 }
 
+static void RegisterStartup(void) {
+    wchar_t exePath[MAX_PATH];
+    DWORD len = GetModuleFileNameW(NULL, exePath, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH)
+        return;
+
+    HKEY hKey;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+        0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
+        RegSetValueExW(hKey, L"ForceMinClock", 0, REG_SZ,
+            (BYTE *)exePath, (DWORD)((len + 1) * sizeof(wchar_t)));
+        RegCloseKey(hKey);
+    }
+}
+
 static void ShowBubble(const wchar_t *text, const wchar_t *title) {
     NOTIFYICONDATAW nid = {0};
     nid.cbSize = sizeof(nid);
@@ -358,6 +374,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 
     CollectMemoryClocks();
     LoadSettings();
+    RegisterStartup();
 
     if (g_memClockCount == 0) {
         wchar_t dbg[2048];
