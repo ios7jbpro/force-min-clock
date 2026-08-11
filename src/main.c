@@ -46,47 +46,45 @@ static void ShowBubble(const wchar_t *text, const wchar_t *title) {
 
 static int RunSmiCommandA(const char *args, char *output, DWORD outputSize) {
     wchar_t cmdLine[512];
-    SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
-    HANDLE hRead, hWrite;
-    STARTUPINFOW si = { sizeof(si) };
-    PROCESS_INFORMATION pi = {0};
-
-    CreatePipe(&hRead, &hWrite, &sa, 0);
-    SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
-
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdOutput = hWrite;
-    si.hStdError = hWrite;
-
     wchar_t wArgs[256];
+    wchar_t tmpFile[] = L"C:\\Windows\\Temp\\fmc_smi_out.txt";
+
     MultiByteToWideChar(CP_UTF8, 0, args, -1, wArgs, ARRAYSIZE(wArgs));
-    StringCchPrintfW(cmdLine, ARRAYSIZE(cmdLine), L"\"%s\" %s", SMI_PATH, wArgs);
+    StringCchPrintfW(cmdLine, ARRAYSIZE(cmdLine), L"/c \"\"%s\" %s > \"%s\" 2>&1\"", SMI_PATH, wArgs, tmpFile);
 
-    BOOL ok = CreateProcessW(NULL, cmdLine, NULL, NULL, TRUE,
-        CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+    SHELLEXECUTEINFOW sei = { sizeof(sei) };
+    sei.lpVerb = L"open";
+    sei.lpFile = L"cmd.exe";
+    sei.lpParameters = cmdLine;
+    sei.nShow = SW_HIDE;
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
 
-    CloseHandle(hWrite);
+    if (!ShellExecuteExW(&sei)) {
+        output[0] = '\0';
+        return -1;
+    }
 
-    if (!ok) {
-        CloseHandle(hRead);
+    WaitForSingleObject(sei.hProcess, 15000);
+    DWORD exitCode = 0;
+    GetExitCodeProcess(sei.hProcess, &exitCode);
+    CloseHandle(sei.hProcess);
+
+    HANDLE hFile = CreateFileW(tmpFile, GENERIC_READ, FILE_SHARE_READ, NULL,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        output[0] = '\0';
         return -1;
     }
 
     DWORD total = 0, bytesRead;
     while (total < outputSize - 1 &&
-           ReadFile(hRead, output + total, outputSize - total - 1, &bytesRead, NULL) && bytesRead > 0) {
+           ReadFile(hFile, output + total, outputSize - total - 1, &bytesRead, NULL) && bytesRead > 0) {
         total += bytesRead;
     }
     output[total] = '\0';
+    CloseHandle(hFile);
 
-    DWORD exitCode = 0;
-    WaitForSingleObject(pi.hProcess, 10000);
-    GetExitCodeProcess(pi.hProcess, &exitCode);
-
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-    CloseHandle(hRead);
-
+    DeleteFileW(tmpFile);
     return (int)exitCode;
 }
 
