@@ -35,4 +35,4 @@ sudo taskkill /F /IM force-min-clock.exe
 - Settings stored in registry `HKCU\Software\ForceMinClock` (MinClockMHz, MaxClockMHz, Active).
 - If Active=1 on startup, clocks are re-applied automatically.
 - nvidia-smi path is hardcoded to `C:\Windows\System32\nvidia-smi.exe` for elevated process compatibility.
-- On every launch, registers itself in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` so it starts on login.
+- On every launch, registers itself in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` so it starts on login (if autostart is enabled, which is the default). Autostart setting is stored in registry and can be toggled from tray menu.

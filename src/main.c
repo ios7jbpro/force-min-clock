@@ -12,6 +12,7 @@
 #define ID_TRAY_MAX_DEFAULT 1004
 #define ID_TRAY_MIN_CLOCK_BASE 2000
 #define ID_TRAY_MAX_CLOCK_BASE 3000
+#define ID_TRAY_AUTOSTART 4000
 
 #define MAX_CLOCK_ENTRIES 128
 #define SMI_PATH L"C:\\Windows\\System32\\nvidia-smi.exe"
@@ -24,9 +25,10 @@ typedef struct {
     int minClockMHz;
     int maxClockMHz;
     int active;
+    int autostart;
 } ClockSettings;
 
-static ClockSettings g_clocks = {0, 0};
+static ClockSettings g_clocks = {0, 0, 0, 1};
 static int g_memClocks[MAX_CLOCK_ENTRIES];
 static int g_memClockCount = 0;
 
@@ -42,6 +44,7 @@ static void SaveSettings(void) {
         RegSetValueExW(hKey, L"MinClockMHz", 0, REG_DWORD, (BYTE *)&g_clocks.minClockMHz, sizeof(int));
         RegSetValueExW(hKey, L"MaxClockMHz", 0, REG_DWORD, (BYTE *)&g_clocks.maxClockMHz, sizeof(int));
         RegSetValueExW(hKey, L"Active", 0, REG_DWORD, (BYTE *)&g_clocks.active, sizeof(int));
+        RegSetValueExW(hKey, L"Autostart", 0, REG_DWORD, (BYTE *)&g_clocks.autostart, sizeof(int));
         RegCloseKey(hKey);
     }
 }
@@ -53,22 +56,28 @@ static void LoadSettings(void) {
         RegQueryValueExW(hKey, L"MinClockMHz", NULL, NULL, (BYTE *)&g_clocks.minClockMHz, &size);
         RegQueryValueExW(hKey, L"MaxClockMHz", NULL, NULL, (BYTE *)&g_clocks.maxClockMHz, &size);
         RegQueryValueExW(hKey, L"Active", NULL, NULL, (BYTE *)&g_clocks.active, &size);
+        size = sizeof(int);
+        if (RegQueryValueExW(hKey, L"Autostart", NULL, NULL, (BYTE *)&g_clocks.autostart, &size) != ERROR_SUCCESS)
+            g_clocks.autostart = 1;
         RegCloseKey(hKey);
     }
 }
 
-static void RegisterStartup(void) {
-    wchar_t exePath[MAX_PATH];
-    DWORD len = GetModuleFileNameW(NULL, exePath, MAX_PATH);
-    if (len == 0 || len >= MAX_PATH)
-        return;
-
+static void SetStartup(BOOL enable) {
     HKEY hKey;
     if (RegCreateKeyExW(HKEY_CURRENT_USER,
         L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
         0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
-        RegSetValueExW(hKey, L"ForceMinClock", 0, REG_SZ,
-            (BYTE *)exePath, (DWORD)((len + 1) * sizeof(wchar_t)));
+        if (enable) {
+            wchar_t exePath[MAX_PATH];
+            DWORD len = GetModuleFileNameW(NULL, exePath, MAX_PATH);
+            if (len > 0 && len < MAX_PATH) {
+                RegSetValueExW(hKey, L"ForceMinClock", 0, REG_SZ,
+                    (BYTE *)exePath, (DWORD)((len + 1) * sizeof(wchar_t)));
+            }
+        } else {
+            RegDeleteValueW(hKey, L"ForceMinClock");
+        }
         RegCloseKey(hKey);
     }
 }
@@ -271,6 +280,7 @@ static void ShowContextMenu(void) {
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(hMenu, MF_STRING, ID_TRAY_APPLY, L"Apply Clock Settings");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(hMenu, g_clocks.autostart ? MF_STRING | MF_CHECKED : MF_STRING, ID_TRAY_AUTOSTART, L"Autostart with Windows");
     AppendMenuW(hMenu, MF_STRING, ID_TRAY_MIN_DEFAULT, L"Reset to Defaults");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(hMenu, MF_STRING, ID_TRAY_EXIT, L"Exit");
@@ -350,6 +360,12 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 }
                 ShowBubble(L"Reset to default clocks.", L"Force Min Clock");
                 break;
+            case ID_TRAY_AUTOSTART:
+                g_clocks.autostart = !g_clocks.autostart;
+                SetStartup(g_clocks.autostart);
+                SaveSettings();
+                PostMessage(g_hWnd, WM_SHOW_MENU_AGAIN, 0, 0);
+                break;
             }
         }
         return 0;
@@ -374,7 +390,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 
     CollectMemoryClocks();
     LoadSettings();
-    RegisterStartup();
+    if (g_clocks.autostart)
+        SetStartup(TRUE);
 
     if (g_memClockCount == 0) {
         wchar_t dbg[2048];
