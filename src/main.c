@@ -291,9 +291,60 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
     CollectMemoryClocks();
 
     if (g_memClockCount == 0) {
-        MessageBoxW(NULL,
-            L"Failed to query NVIDIA GPU clocks.\n\nEnsure nvidia-smi is available and an NVIDIA GPU is present.",
-            L"Force Min Clock", MB_OK | MB_ICONERROR);
+        wchar_t dbg[1024];
+        wchar_t wArgs[] = L"-q -d SUPPORTED_CLOCKS";
+        wchar_t cmdLine[512];
+        wchar_t tmpFile[] = L"C:\\Windows\\Temp\\fmc_smi_out.txt";
+        StringCchPrintfW(cmdLine, ARRAYSIZE(cmdLine),
+            L"/c \"\"%s\" %s > \"%s\" 2>&1\"", SMI_PATH, wArgs, tmpFile);
+
+        SHELLEXECUTEINFOW sei = { sizeof(sei) };
+        sei.lpVerb = L"open";
+        sei.lpFile = L"cmd.exe";
+        sei.lpParameters = cmdLine;
+        sei.nShow = SW_HIDE;
+        sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+
+        BOOL execOk = ShellExecuteExW(&sei);
+        DWORD exitCode = 999;
+        if (execOk) {
+            WaitForSingleObject(sei.hProcess, 15000);
+            GetExitCodeProcess(sei.hProcess, &exitCode);
+            CloseHandle(sei.hProcess);
+        }
+
+        BOOL fileOk = FALSE;
+        char fileBuf[4096] = "";
+        DWORD fileSize = 0;
+        HANDLE hFile = CreateFileW(tmpFile, GENERIC_READ, FILE_SHARE_READ,
+            NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hFile != INVALID_HANDLE_VALUE) {
+            ReadFile(hFile, fileBuf, sizeof(fileBuf) - 1, &fileSize, NULL);
+            fileBuf[fileSize] = '\0';
+            CloseHandle(hFile);
+            fileOk = TRUE;
+        }
+
+        wchar_t fileContentW[4096] = L"";
+        if (fileSize > 0) {
+            MultiByteToWideChar(CP_UTF8, 0, fileBuf, -1, fileContentW, ARRAYSIZE(fileContentW));
+        }
+
+        StringCchPrintfW(dbg, ARRAYSIZE(dbg),
+            L"ShellExecuteEx: %s\n"
+            L"Exit code: %d\n"
+            L"File exists: %s\n"
+            L"File size: %d\n\n"
+            L"Command:\n%s\n\n"
+            L"Output (first 500 chars):\n%.500s",
+            execOk ? L"OK" : L"FAILED",
+            (int)exitCode,
+            fileOk ? L"YES" : L"NO",
+            (int)fileSize,
+            cmdLine,
+            fileContentW);
+
+        MessageBoxW(NULL, dbg, L"Force Min Clock - Debug", MB_OK | MB_ICONERROR);
         return 1;
     }
 
