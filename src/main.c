@@ -118,7 +118,7 @@ static void WriteLog(const char *msg) {
 }
 
 static void CollectMemoryClocks(void) {
-    char output[16384];
+    char output[65536];
     int rc = RunSmiCommandA("-q -d SUPPORTED_CLOCKS", output, sizeof(output));
 
     char log[256];
@@ -135,15 +135,20 @@ static void CollectMemoryClocks(void) {
         char *eol = strstr(p, "\n");
         int len = eol ? (int)(eol - p) : (int)strlen(p);
 
-        char *mem = strstr(p, "Memory");
+        char *mem = NULL;
+        for (int i = 0; i < len - 5; i++) {
+            if (strncmp(p + i, "Memory", 6) == 0) {
+                mem = p + i;
+                break;
+            }
+        }
         if (mem) {
             char *colon = strchr(mem, ':');
-            if (colon) {
+            if (colon && (int)(colon - p) < len) {
                 int mhz = 0;
                 int scanrc = sscanf(colon + 1, " %d MHz", &mhz);
                 StringCchPrintfA(log, sizeof(log),
-                    "Line %d: found Memory, colon='%c', scanrc=%d, mhz=%d, colon+1='%.30s'\r\n",
-                    lineNum, *colon, scanrc, mhz, colon + 1);
+                    "Line %d: scanrc=%d, mhz=%d\r\n", lineNum, scanrc, mhz);
                 WriteLog(log);
                 if (scanrc == 1 && mhz > 0) {
                     g_memClocks[found++] = mhz;
