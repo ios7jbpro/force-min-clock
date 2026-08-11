@@ -13,6 +13,7 @@
 #define ID_TRAY_MAX_CLOCK_BASE 3000
 
 #define MAX_CLOCK_ENTRIES 128
+#define SMI_PATH L"C:\\Windows\\System32\\nvidia-smi.exe"
 
 static HINSTANCE g_hInstance;
 static HWND g_hWnd;
@@ -21,10 +22,9 @@ static NOTIFYICONDATAW g_nid = {0};
 typedef struct {
     int minClockMHz;
     int maxClockMHz;
-    int active;
 } ClockSettings;
 
-static ClockSettings g_clocks = {0, 0, 0};
+static ClockSettings g_clocks = {0, 0};
 static int g_memClocks[MAX_CLOCK_ENTRIES];
 static int g_memClockCount = 0;
 
@@ -44,57 +44,56 @@ static void ShowBubble(const wchar_t *text, const wchar_t *title) {
     Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
 
-static int RunSmiCommand(const wchar_t *args, wchar_t *output, DWORD outputSize) {
-    wchar_t cmd[512];
+static int RunSmiCommandA(const char *args, char *output, DWORD outputSize) {
+    wchar_t cmdLine[512];
     SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
     HANDLE hRead, hWrite;
     STARTUPINFOW si = { sizeof(si) };
     PROCESS_INFORMATION pi = {0};
 
+    CreatePipe(&hRead, &hWrite, &sa, 0);
+    SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
+
     si.dwFlags = STARTF_USESTDHANDLES;
     si.hStdOutput = hWrite;
     si.hStdError = hWrite;
 
-    CreatePipe(&hRead, &hWrite, &sa, 0);
-    SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
+    wchar_t wArgs[256];
+    MultiByteToWideChar(CP_UTF8, 0, args, -1, wArgs, ARRAYSIZE(wArgs));
+    StringCchPrintfW(cmdLine, ARRAYSIZE(cmdLine), L"\"%s\" %s", SMI_PATH, wArgs);
 
-    StringCchPrintfW(cmd, ARRAYSIZE(cmd), L"C:\\Windows\\System32\\nvidia-smi.exe %s", args);
-
-    BOOL ok = CreateProcessW(NULL, cmd, NULL, NULL, TRUE,
+    BOOL ok = CreateProcessW(NULL, cmdLine, NULL, NULL, TRUE,
         CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
 
     CloseHandle(hWrite);
 
     if (!ok) {
         CloseHandle(hRead);
-        return 0;
+        return -1;
     }
 
-    DWORD total = 0, read;
-    while (total < outputSize - sizeof(wchar_t) &&
-           ReadFile(hRead, (BYTE *)output + total, outputSize - total - sizeof(wchar_t), &read, NULL) && read > 0) {
-        total += read;
+    DWORD total = 0, bytesRead;
+    while (total < outputSize - 1 &&
+           ReadFile(hRead, output + total, outputSize - total - 1, &bytesRead, NULL) && bytesRead > 0) {
+        total += bytesRead;
     }
-    output[total / sizeof(wchar_t)] = L'\0';
+    output[total] = '\0';
 
+    DWORD exitCode = 0;
     WaitForSingleObject(pi.hProcess, 10000);
-    GetExitCodeProcess(pi.hProcess, (DWORD *)&ok);
+    GetExitCodeProcess(pi.hProcess, &exitCode);
 
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
     CloseHandle(hRead);
 
-    return (int)ok;
+    return (int)exitCode;
 }
 
 static int RunSmiElevated(const wchar_t *args) {
-    wchar_t cmd[512];
     SHELLEXECUTEINFOW sei = { sizeof(sei) };
-
-    StringCchPrintfW(cmd, ARRAYSIZE(cmd), L"C:\\Windows\\System32\\nvidia-smi.exe %s", args);
-
     sei.lpVerb = L"runas";
-    sei.lpFile = L"nvidia-smi";
+    sei.lpFile = SMI_PATH;
     sei.lpParameters = args;
     sei.nShow = SW_HIDE;
     sei.fMask = SEE_MASK_NOCLOSEPROCESS;
@@ -110,25 +109,27 @@ static int RunSmiElevated(const wchar_t *args) {
 }
 
 static void CollectMemoryClocks(void) {
-    wchar_t output[16384];
-    if (!RunSmiCommand(L"-q -d SUPPORTED_CLOCKS", output, ARRAYSIZE(output)))
+    char output[16384];
+    int rc = RunSmiCommandA("-q -d SUPPORTED_CLOCKS", output, sizeof(output));
+
+    if (rc < 0)
         return;
 
     int found = 0;
-    wchar_t *ctx = NULL;
-    wchar_t *line = wcstok(output, L"\r\n", &ctx);
+    char *ctx = NULL;
+    char *line = strtok_s(output, "\r\n", &ctx);
     while (line && found < MAX_CLOCK_ENTRIES) {
-        wchar_t *mem = wcsstr(line, L"Memory");
+        char *mem = strstr(line, "Memory");
         if (mem) {
-            wchar_t *colon = wcschr(mem, L':');
+            char *colon = strchr(mem, ':');
             if (colon) {
                 int mhz = 0;
-                if (swscanf(colon + 1, L"%d MHz", &mhz) == 1 && mhz > 0) {
+                if (sscanf(colon + 1, " %d MHz", &mhz) == 1 && mhz > 0) {
                     g_memClocks[found++] = mhz;
                 }
             }
         }
-        line = wcstok(NULL, L"\r\n", &ctx);
+        line = strtok_s(NULL, "\r\n", &ctx);
     }
 
     g_memClockCount = found;
