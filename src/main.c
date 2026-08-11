@@ -23,6 +23,7 @@ static NOTIFYICONDATAW g_nid = {0};
 typedef struct {
     int minClockMHz;
     int maxClockMHz;
+    int active;
 } ClockSettings;
 
 static ClockSettings g_clocks = {0, 0};
@@ -31,6 +32,29 @@ static int g_memClockCount = 0;
 
 static int CompareInts(const void *a, const void *b) {
     return (*(const int *)a - *(const int *)b);
+}
+
+#define REG_KEY L"Software\\ForceMinClock"
+
+static void SaveSettings(void) {
+    HKEY hKey;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, REG_KEY, 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
+        RegSetValueExW(hKey, L"MinClockMHz", 0, REG_DWORD, (BYTE *)&g_clocks.minClockMHz, sizeof(int));
+        RegSetValueExW(hKey, L"MaxClockMHz", 0, REG_DWORD, (BYTE *)&g_clocks.maxClockMHz, sizeof(int));
+        RegSetValueExW(hKey, L"Active", 0, REG_DWORD, (BYTE *)&g_clocks.active, sizeof(int));
+        RegCloseKey(hKey);
+    }
+}
+
+static void LoadSettings(void) {
+    HKEY hKey;
+    DWORD size = sizeof(int);
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, REG_KEY, 0, KEY_QUERY_VALUE, &hKey) == ERROR_SUCCESS) {
+        RegQueryValueExW(hKey, L"MinClockMHz", NULL, NULL, (BYTE *)&g_clocks.minClockMHz, &size);
+        RegQueryValueExW(hKey, L"MaxClockMHz", NULL, NULL, (BYTE *)&g_clocks.maxClockMHz, &size);
+        RegQueryValueExW(hKey, L"Active", NULL, NULL, (BYTE *)&g_clocks.active, &size);
+        RegCloseKey(hKey);
+    }
 }
 
 static void ShowBubble(const wchar_t *text, const wchar_t *title) {
@@ -285,6 +309,8 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     char smiOutput[256];
                     int rc = RunSmiCommandA(args, smiOutput, sizeof(smiOutput));
                     if (rc == 0) {
+                        g_clocks.active = 1;
+                        SaveSettings();
                         wchar_t msg[128];
                         StringCchPrintfW(msg, ARRAYSIZE(msg),
                             L"Memory clocks locked:\nMin: %d MHz\nMax: %d MHz",
@@ -300,6 +326,8 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             case ID_TRAY_MIN_DEFAULT:
                 g_clocks.minClockMHz = 0;
                 g_clocks.maxClockMHz = 0;
+                g_clocks.active = 0;
+                SaveSettings();
                 {
                     char smiOutput[256];
                     RunSmiCommandA("--reset-memory-clocks", smiOutput, sizeof(smiOutput));
@@ -329,6 +357,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
     g_hInstance = hInstance;
 
     CollectMemoryClocks();
+    LoadSettings();
 
     if (g_memClockCount == 0) {
         wchar_t dbg[2048];
@@ -359,6 +388,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
     }
 
     AddTrayIcon();
+
+    if (g_clocks.active && (g_clocks.minClockMHz > 0 || g_clocks.maxClockMHz > 0)) {
+        char args[128];
+        StringCchPrintfA(args, ARRAYSIZE(args), "-lmc %d,%d",
+            g_clocks.minClockMHz, g_clocks.maxClockMHz);
+        char smiOutput[256];
+        RunSmiCommandA(args, smiOutput, sizeof(smiOutput));
+    }
 
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0)) {
