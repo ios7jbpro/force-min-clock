@@ -5,6 +5,7 @@
 #include "resource.h"
 
 #define WM_TRAYICON (WM_USER + 1)
+#define WM_SHOW_MENU_AGAIN (WM_USER + 2)
 #define ID_TRAY_EXIT 1001
 #define ID_TRAY_APPLY 1002
 #define ID_TRAY_MIN_DEFAULT 1003
@@ -240,16 +241,13 @@ static void HandleClockSelection(WORD id, BOOL isMin) {
     int idx = (int)(isMin ? (id - ID_TRAY_MIN_CLOCK_BASE) : (id - ID_TRAY_MAX_CLOCK_BASE));
     if (idx >= 0 && idx < g_memClockCount) {
         int mhz = g_memClocks[idx];
-        wchar_t msg[128];
         if (isMin) {
             g_clocks.minClockMHz = mhz;
-            StringCchPrintfW(msg, ARRAYSIZE(msg), L"Min clock set to %d MHz.", mhz);
         } else {
             g_clocks.maxClockMHz = mhz;
-            StringCchPrintfW(msg, ARRAYSIZE(msg), L"Max clock set to %d MHz.", mhz);
         }
-        ShowBubble(msg, L"Force Min Clock");
     }
+    PostMessage(g_hWnd, WM_SHOW_MENU_AGAIN, 0, 0);
 }
 
 static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -258,6 +256,10 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (lParam == WM_RBUTTONUP || lParam == WM_LBUTTONDBLCLK) {
             ShowContextMenu();
         }
+        return 0;
+
+    case WM_SHOW_MENU_AGAIN:
+        ShowContextMenu();
         return 0;
 
     case WM_COMMAND: {
@@ -274,10 +276,11 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 break;
             case ID_TRAY_APPLY:
                 if (g_clocks.minClockMHz > 0 || g_clocks.maxClockMHz > 0) {
-                    wchar_t args[128];
-                    StringCchPrintfW(args, ARRAYSIZE(args), L"-lmc %d,%d",
+                    char args[128];
+                    StringCchPrintfA(args, ARRAYSIZE(args), "-lmc %d,%d",
                         g_clocks.minClockMHz, g_clocks.maxClockMHz);
-                    int rc = RunSmiElevated(args);
+                    char smiOutput[256];
+                    int rc = RunSmiCommandA(args, smiOutput, sizeof(smiOutput));
                     if (rc == 0) {
                         wchar_t msg[128];
                         StringCchPrintfW(msg, ARRAYSIZE(msg),
@@ -294,7 +297,10 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             case ID_TRAY_MIN_DEFAULT:
                 g_clocks.minClockMHz = 0;
                 g_clocks.maxClockMHz = 0;
-                RunSmiElevated(L"--reset-gpu-clocks");
+                {
+                    char smiOutput[256];
+                    RunSmiCommandA("--reset-gpu-clocks", smiOutput, sizeof(smiOutput));
+                }
                 ShowBubble(L"Reset to default clocks.", L"Force Min Clock");
                 break;
             }
