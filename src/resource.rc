@@ -1,0 +1,4 @@
+#include "resource.h"
+#include <windows.h>
+
+IDR_MAIN_ICON ICON "..\\icon.png"
